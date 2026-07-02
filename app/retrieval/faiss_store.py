@@ -1,74 +1,55 @@
-"""FAISS vector store for SHL assessment retrieval."""
+"""FAISS vector store for SHL assessment retrieval.
+
+Uses sentence-transformers for local embeddings (no API calls, no rate limits).
+"""
 
 from __future__ import annotations
-import json
 import pickle
 from pathlib import Path
 
 import numpy as np
 import faiss
-from google import genai
+from sentence_transformers import SentenceTransformer
 
 from app.models.schemas import CatalogAssessment
 from app.utils.config import settings
 
 
-# ── Singleton client ───────────────────────────────────────────────────────
+# ── Singleton embedding model ──────────────────────────────────────────────
 
-_client: genai.Client | None = None
+_model: SentenceTransformer | None = None
 
 
-def _get_client() -> genai.Client:
-    global _client
-    if _client is None:
-        _client = genai.Client(api_key=settings.GEMINI_API_KEY)
-    return _client
+def _get_model() -> SentenceTransformer:
+    global _model
+    if _model is None:
+        _model = SentenceTransformer(settings.EMBEDDING_MODEL)
+    return _model
 
 
 # ── Embedding helpers ──────────────────────────────────────────────────────
 
 
-def generate_embeddings(texts: list[str], batch_size: int = 50) -> np.ndarray:
-    """Generate embeddings for a list of texts using Gemini embedding API."""
-    client = _get_client()
-    all_embeddings = []
-
-    import time
-    from google.genai.errors import ClientError
-    for i in range(0, len(texts), batch_size):
-        batch = texts[i : i + batch_size]
-        max_retries = 10
-        for attempt in range(max_retries):
-            try:
-                result = client.models.embed_content(
-                    model=settings.EMBEDDING_MODEL,
-                    contents=batch,
-                )
-                for emb in result.embeddings:
-                    all_embeddings.append(emb.values)
-                break
-            except ClientError as e:
-                if '429' in str(e) or 'RESOURCE_EXHAUSTED' in str(e):
-                    if attempt < max_retries - 1:
-                        print(f"Rate limited. Sleeping for 65s (attempt {attempt+1}/{max_retries})")
-                        time.sleep(65)
-                    else:
-                        raise
-                else:
-                    raise
-        time.sleep(1)
-
-    return np.array(all_embeddings, dtype=np.float32)
+def generate_embeddings(texts: list[str], batch_size: int = 64) -> np.ndarray:
+    """Generate embeddings for a list of texts using sentence-transformers (local)."""
+    model = _get_model()
+    embeddings = model.encode(
+        texts,
+        batch_size=batch_size,
+        show_progress_bar=True,
+        normalize_embeddings=True,  # Pre-normalize for cosine similarity
+    )
+    return np.array(embeddings, dtype=np.float32)
 
 
 def generate_query_embedding(query: str) -> np.ndarray:
     """Generate embedding for a single query string."""
-    client = _get_client()
-    result = client.models.embed_content(
-        model=settings.EMBEDDING_MODEL,
-        contents=[query],
+    model = _get_model()
+    embedding = model.encode(
+        [query],
+        normalize_embeddings=True,
     )
-    return np.array(result.embeddings[0].values, dtype=np.float32).reshape(1, -1)
+    return np.array(embedding, dtype=np.float32)
 
 
 # ── FAISS Index ────────────────────────────────────────────────────────────
@@ -90,13 +71,11 @@ class FAISSStore:
         print(f"Generating embeddings for {len(texts)} assessments...")
         embeddings = generate_embeddings(texts)
 
-        # Normalize for cosine similarity (Inner Product on normalized = cosine)
-        faiss.normalize_L2(embeddings)
-
+        # Already normalized via normalize_embeddings=True
         self.index = faiss.IndexFlatIP(embeddings.shape[1])
         self.index.add(embeddings)
         self._loaded = True
-        print(f"FAISS index built with {self.index.ntotal} vectors.")
+        print(f"FAISS index built with {self.index.ntotal} vectors (dim={embeddings.shape[1]}).")
 
     def save(self, path: str | None = None) -> None:
         """Save FAISS index and metadata to disk."""
@@ -133,7 +112,7 @@ class FAISSStore:
 
         k = min(top_k or settings.TOP_K_RETRIEVAL, self.index.ntotal)
         query_vec = generate_query_embedding(query)
-        faiss.normalize_L2(query_vec)
+        # Already normalized via normalize_embeddings=True
 
         scores, indices = self.index.search(query_vec, k)
         results = []

@@ -11,8 +11,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
+# Pre-download the sentence-transformers model so it's cached in the image
+RUN python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('all-MiniLM-L6-v2')"
+
 # Copy project files
 COPY . .
+
+# Rebuild FAISS index with local embeddings (sentence-transformers)
+RUN python scripts/ingest_catalog.py
 
 # Use Render's PORT env var (defaults to 10000)
 ENV PORT=10000

@@ -1,23 +1,15 @@
-"""Gemini-powered reranker – takes retrieved assessments and conversation context,
+"""LLM-powered reranker – takes retrieved assessments and conversation context,
 then selects and ranks the most relevant ones."""
 
 from __future__ import annotations
 import json
 import re
 
-from google import genai
-
 from app.models.schemas import CatalogAssessment, Recommendation
 from app.utils.config import settings
+from app.utils.llm_client import generate_text
 
-_client: genai.Client | None = None
 
-
-def _get_client() -> genai.Client:
-    global _client
-    if _client is None:
-        _client = genai.Client(api_key=settings.GEMINI_API_KEY)
-    return _client
 
 
 RERANK_PROMPT = """You are an SHL assessment recommendation engine. 
@@ -52,12 +44,11 @@ def rerank_assessments(
     candidates: list[CatalogAssessment],
     max_results: int | None = None,
 ) -> list[Recommendation]:
-    """Use Gemini to rerank candidate assessments based on conversation context."""
+    """Use LLM to rerank candidate assessments based on conversation context."""
     if not candidates:
         return []
 
     max_k = min(max_results or settings.TOP_K_FINAL, 10)
-    client = _get_client()
 
     # Build assessment summaries for the prompt
     assessment_texts = []
@@ -77,14 +68,11 @@ def rerank_assessments(
         assessments="\n\n".join(assessment_texts),
     )
 
-    response = client.models.generate_content(
-        model=settings.GENERATION_MODEL,
-        contents=prompt,
-    )
+    response_text = generate_text(prompt, temperature=0.1)
 
     # Parse JSON from response
     try:
-        text = response.text.strip()
+        text = response_text.strip()
         # Strip markdown code fences if present
         if text.startswith("```"):
             text = re.sub(r"^```(?:json)?\s*", "", text)

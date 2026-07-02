@@ -57,8 +57,8 @@ async def chat(request: ChatRequest):
         # Return a graceful error message inside the ChatResponse schema 
         # so the client doesn't get a raw 500 error, especially for API rate limits.
         error_msg = str(e)
-        if "429" in error_msg or "RESOURCE_EXHAUSTED" in error_msg:
-            reply = "I'm currently experiencing heavy traffic and hit a rate limit with the Google Gemini API. Please wait about a minute and try again!"
+        if "429" in error_msg or "rate" in error_msg.lower():
+            reply = "I'm currently experiencing heavy traffic and hit a rate limit. Please wait about a minute and try again!"
         else:
             reply = f"An internal error occurred: {error_msg}"
             

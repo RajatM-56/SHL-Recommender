@@ -9,7 +9,7 @@ import json
 import re
 from typing import Literal
 
-from google import genai
+
 from langgraph.graph import StateGraph, END
 
 from app.models.schemas import (
@@ -23,19 +23,12 @@ from app.retrieval.faiss_store import faiss_store
 from app.ranking.reranker import rerank_assessments
 from app.catalog.scraper import load_catalog, find_assessments_by_name
 from app.utils.config import settings
+from app.utils.llm_client import generate_text
 
 
-# ── Gemini client singleton ────────────────────────────────────────────────
+# ── Catalog singleton ──────────────────────────────────────────────────────
 
-_client: genai.Client | None = None
 _catalog: list[CatalogAssessment] | None = None
-
-
-def _get_client() -> genai.Client:
-    global _client
-    if _client is None:
-        _client = genai.Client(api_key=settings.GEMINI_API_KEY)
-    return _client
 
 
 def _get_catalog() -> list[CatalogAssessment]:
@@ -108,15 +101,14 @@ def intent_detection(state: GraphState) -> GraphState:
         return state
 
     # LLM-based intent classification
-    client = _get_client()
     conversation = _format_conversation(messages)
 
-    response = client.models.generate_content(
-        model=settings.GENERATION_MODEL,
-        contents=INTENT_PROMPT.format(conversation=conversation),
+    response_text = generate_text(
+        INTENT_PROMPT.format(conversation=conversation),
+        temperature=0.1,
     )
 
-    intent = response.text.strip().lower().replace('"', "").replace("'", "")
+    intent = response_text.strip().lower().replace('"', "").replace("'", "")
     # Validate intent
     valid_intents = {"clarify", "recommend", "refine", "compare", "refuse"}
     if intent not in valid_intents:
@@ -153,15 +145,13 @@ Do NOT recommend any assessments yet.
 
 def clarify_node(state: GraphState) -> GraphState:
     """Ask clarifying questions when insufficient info is available."""
-    client = _get_client()
     conversation = _format_conversation(state.messages)
 
-    response = client.models.generate_content(
-        model=settings.GENERATION_MODEL,
-        contents=CLARIFY_PROMPT.format(conversation=conversation),
+    response_text = generate_text(
+        CLARIFY_PROMPT.format(conversation=conversation),
     )
 
-    state.reply = response.text.strip()
+    state.reply = response_text
     state.recommendations = []
     state.end_of_conversation = False
     return state
@@ -191,7 +181,6 @@ Keep it conversational and helpful. Do NOT include URLs in your text (they are p
 
 def recommend_node(state: GraphState) -> GraphState:
     """Retrieve and recommend assessments."""
-    client = _get_client()
     conversation = _format_conversation(state.messages)
 
     # Build a rich search query from the conversation
@@ -201,7 +190,7 @@ def recommend_node(state: GraphState) -> GraphState:
     candidates = faiss_store.search(search_query, top_k=settings.TOP_K_RETRIEVAL)
     state.retrieved_assessments = candidates
 
-    # Rerank using Gemini
+    # Rerank using LLM
     recommendations = rerank_assessments(conversation, candidates)
     state.recommendations = recommendations
 
@@ -210,32 +199,27 @@ def recommend_node(state: GraphState) -> GraphState:
         f"- {r.name} ({r.test_type})" for r in recommendations
     )
 
-    response = client.models.generate_content(
-        model=settings.GENERATION_MODEL,
-        contents=RECOMMEND_REPLY_PROMPT.format(
+    response_text = generate_text(
+        RECOMMEND_REPLY_PROMPT.format(
             conversation=conversation,
             assessments=assessment_summaries,
         ),
     )
 
-    state.reply = response.text.strip()
+    state.reply = response_text
     state.end_of_conversation = False
     return state
 
 
 def _build_search_query(conversation: str) -> str:
     """Extract a focused search query from the full conversation."""
-    client = _get_client()
-    response = client.models.generate_content(
-        model=settings.GENERATION_MODEL,
-        contents=(
-            "Extract a concise search query (max 50 words) from this conversation "
-            "that captures the key hiring requirements: role, skills, level, and test preferences. "
-            "Return ONLY the search query text, nothing else.\n\n"
-            f"CONVERSATION:\n{conversation}"
-        ),
+    return generate_text(
+        "Extract a concise search query (max 50 words) from this conversation "
+        "that captures the key hiring requirements: role, skills, level, and test preferences. "
+        "Return ONLY the search query text, nothing else.\n\n"
+        f"CONVERSATION:\n{conversation}",
+        temperature=0.1,
     )
-    return response.text.strip()
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -259,7 +243,6 @@ Return ONLY the JSON array.
 
 def refine_node(state: GraphState) -> GraphState:
     """Refine recommendations based on updated requirements."""
-    client = _get_client()
     conversation = _format_conversation(state.messages)
 
     # Build an updated search query
@@ -278,18 +261,15 @@ def refine_node(state: GraphState) -> GraphState:
         f"- {r.name} ({r.test_type})" for r in recommendations
     )
 
-    response = client.models.generate_content(
-        model=settings.GENERATION_MODEL,
-        contents=(
-            f"You are an SHL Assessment Recommender. The user refined their requirements. "
-            f"Explain the UPDATED recommendations briefly.\n\n"
-            f"CONVERSATION:\n{conversation}\n\n"
-            f"UPDATED ASSESSMENTS:\n{assessment_summaries}\n\n"
-            f"Write a concise response explaining the changes. Do NOT include URLs."
-        ),
+    response_text = generate_text(
+        f"You are an SHL Assessment Recommender. The user refined their requirements. "
+        f"Explain the UPDATED recommendations briefly.\n\n"
+        f"CONVERSATION:\n{conversation}\n\n"
+        f"UPDATED ASSESSMENTS:\n{assessment_summaries}\n\n"
+        f"Write a concise response explaining the changes. Do NOT include URLs.",
     )
 
-    state.reply = response.text.strip()
+    state.reply = response_text
     state.end_of_conversation = False
     return state
 
@@ -323,7 +303,6 @@ Be factual. NEVER invent information.
 
 def compare_node(state: GraphState) -> GraphState:
     """Compare specific assessments using catalog data."""
-    client = _get_client()
     conversation = _format_conversation(state.messages)
 
     # Extract assessment names to compare from the last user message
@@ -333,18 +312,16 @@ def compare_node(state: GraphState) -> GraphState:
             last_user_msg = m.content
             break
 
-    # Use Gemini to extract the assessment names
-    extract_response = client.models.generate_content(
-        model=settings.GENERATION_MODEL,
-        contents=(
-            "Extract the names of assessments the user wants to compare from this message. "
-            "Return them as a JSON array of strings. Return ONLY the JSON array.\n\n"
-            f"Message: {last_user_msg}"
-        ),
+    # Use LLM to extract the assessment names
+    extract_text = generate_text(
+        "Extract the names of assessments the user wants to compare from this message. "
+        "Return them as a JSON array of strings. Return ONLY the JSON array.\n\n"
+        f"Message: {last_user_msg}",
+        temperature=0.1,
     )
 
     try:
-        text = extract_response.text.strip()
+        text = extract_text.strip()
         if text.startswith("```"):
             text = re.sub(r"^```(?:json)?\s*", "", text)
             text = re.sub(r"\s*```$", "", text)
@@ -376,15 +353,14 @@ def compare_node(state: GraphState) -> GraphState:
             f"Languages: {', '.join(a.languages[:5])}"
         )
 
-    response = client.models.generate_content(
-        model=settings.GENERATION_MODEL,
-        contents=COMPARE_PROMPT.format(
+    response_text = generate_text(
+        COMPARE_PROMPT.format(
             conversation=conversation,
             assessments="\n\n---\n\n".join(assessment_details) if assessment_details else "No matching assessments found in catalog.",
         ),
     )
 
-    state.reply = response.text.strip()
+    state.reply = response_text
     state.recommendations = []
     state.end_of_conversation = False
     return state
@@ -407,17 +383,13 @@ def refuse_node(state: GraphState) -> GraphState:
 
     # If it wasn't caught by rule-based, generate a polite refusal
     if not reason:
-        client = _get_client()
-        response = client.models.generate_content(
-            model=settings.GENERATION_MODEL,
-            contents=(
-                "You are an SHL Assessment Recommender. The user asked something unrelated "
-                "to SHL assessments. Politely decline and redirect them to ask about SHL assessments. "
-                "Keep it brief.\n\n"
-                f"User said: {last_user_msg}"
-            ),
+        response_text = generate_text(
+            "You are an SHL Assessment Recommender. The user asked something unrelated "
+            "to SHL assessments. Politely decline and redirect them to ask about SHL assessments. "
+            "Keep it brief.\n\n"
+            f"User said: {last_user_msg}",
         )
-        state.reply = response.text.strip()
+        state.reply = response_text
     else:
         state.reply = get_refusal_reply(reason)
 
