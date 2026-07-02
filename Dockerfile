@@ -28,5 +28,5 @@ EXPOSE ${PORT}
 HEALTHCHECK --interval=30s --timeout=10s --start-period=10s --retries=3 \
     CMD python -c "import os, urllib.request; urllib.request.urlopen(f'http://localhost:{os.environ.get(\"PORT\",10000)}/health')" || exit 1
 
-# Start the server immediately — index is already built
-CMD sh -c "uvicorn main:app --host 0.0.0.0 --port ${PORT}"
+# Start the server using python main.py (handles PORT env var safely)
+CMD ["python", "main.py"]

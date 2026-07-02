@@ -13,7 +13,11 @@ from app.utils.config import settings
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Load FAISS index on startup."""
-    settings.validate()
+    try:
+        settings.validate()
+    except ValueError as e:
+        print(f"WARNING: Configuration error: {e}")
+        print("WARNING: The app will start to pass health checks, but /chat may fail until configured.")
     print("Loading FAISS index...")
     faiss_store.load()
     print(f"Ready! {faiss_store.index.ntotal} assessments indexed.")
