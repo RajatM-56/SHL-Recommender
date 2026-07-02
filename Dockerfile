@@ -14,12 +14,18 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy project files
 COPY . .
 
-# Expose port
-EXPOSE 8000
+# Build FAISS index during image build (requires GEMINI_API_KEY as a build arg)
+ARG GEMINI_API_KEY
+ENV GEMINI_API_KEY=${GEMINI_API_KEY}
+RUN python scripts/ingest_catalog.py
 
-# Health check
-HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
-    CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')" || exit 1
+# Use Render's PORT env var (defaults to 10000)
+ENV PORT=10000
+EXPOSE ${PORT}
 
-# Run the ingestion script to build the FAISS index, then start the server
-CMD ["sh", "-c", "python scripts/ingest_catalog.py && uvicorn main:app --host 0.0.0.0 --port 8000"]
+# Health check using the dynamic port
+HEALTHCHECK --interval=30s --timeout=10s --start-period=10s --retries=3 \
+    CMD python -c "import os, urllib.request; urllib.request.urlopen(f'http://localhost:{os.environ.get(\"PORT\",10000)}/health')" || exit 1
+
+# Start the server immediately — index is already built
+CMD sh -c "uvicorn main:app --host 0.0.0.0 --port ${PORT}"
