@@ -9,7 +9,6 @@ from pathlib import Path
 
 import numpy as np
 import faiss
-from sentence_transformers import SentenceTransformer
 
 from app.models.schemas import CatalogAssessment
 from app.utils.config import settings
@@ -17,12 +16,13 @@ from app.utils.config import settings
 
 # ── Singleton embedding model ──────────────────────────────────────────────
 
-_model: SentenceTransformer | None = None
+_model: 'SentenceTransformer' | None = None
 
 
-def _get_model() -> SentenceTransformer:
+def _get_model() -> 'SentenceTransformer':
     global _model
     if _model is None:
+        from sentence_transformers import SentenceTransformer
         _model = SentenceTransformer(settings.EMBEDDING_MODEL)
     return _model
 
