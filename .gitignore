@@ -21,8 +21,7 @@ env/
 *.swo
 .DS_Store
 
-# FAISS index (regenerated)
-data/faiss_index/
+# FAISS index (committed for deployment)
 
 # Notebooks
 .ipynb_checkpoints/

@@ -14,11 +14,6 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy project files
 COPY . .
 
-# Build FAISS index during image build (requires GEMINI_API_KEY as a build arg)
-ARG GEMINI_API_KEY
-ENV GEMINI_API_KEY=${GEMINI_API_KEY}
-RUN python scripts/ingest_catalog.py
-
 # Use Render's PORT env var (defaults to 10000)
 ENV PORT=10000
 EXPOSE ${PORT}
